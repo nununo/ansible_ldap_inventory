@@ -80,18 +80,6 @@ DOCUMENTATION = '''
                 - "LDAP path to search for computer objects."
                 - "Example: CN=Computers,DC=local,DC=com"
             required: True
-        username:
-            description:
-                - "LDAP user account used to bind our LDAP search when auth_type is set to simple" 
-                - "Examples:"
-                - "  username@local.com"
-                - "  domain\\\\username"
-            required: False
-        password:
-            description:
-                - "LDAP user password used to bind our LDAP search."
-                - "Example: Password123!"
-            required: False
         ldap_filter:
             description:
                 - "Filter used to find computer objects."
@@ -127,15 +115,6 @@ DOCUMENTATION = '''
             default: False
             required: False
             type: bool
-        auth_type:
-            description:
-                - Defines the type of authentication used when connecting to Active Directory (LDAP).
-                - When using C(simple), the I(username) and (password) options must be set. This requires support of LDAPS (SSL)
-                - When using C(gssapi), run C(kinit) before running Ansible to get a valid Kerberos ticket. 
-            choices:
-                - simple
-                - gssapi
-            type: str
         extra_groups:
             description: "A list of additional groups to add under 'all' and contain all discovered hosts."
             default: []
@@ -148,9 +127,6 @@ EXAMPLES = '''
     plugin: ldap_inventory
     domain: ldaps://ldapserver.local.com:636
     search_ou: CN=Computers,DC=local,DC=com
-    auth_type: simple
-    username: username@local.com
-    password: Password123!
 '''
 
 import os
@@ -272,8 +248,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         """
         self.domain = self.get_option('domain')
         self.port = self.get_option('port')
-        self.username = os.getenv('LDAP_USER') or self.get_option('username')
-        self.password = os.getenv('LDAP_PASS') or self.get_option('password')
         self.search_ou = os.getenv('SEARCH_OU') or self.get_option('search_ou')
         self.group_membership = self.get_option('group_membership')
         self.account_age = self.get_option('account_age')
@@ -282,7 +256,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         self.exclude_groups = self.get_option('exclude_groups')
         self.exclude_hosts = self.get_option('exclude_hosts')
         self.use_fqdn = self.get_option('fqdn_format')
-        self.auth_type = self.get_option('auth_type')
         self.scheme = self.get_option('scheme')
         self.ldap_filter = self.get_option('ldap_filter')
         self.group_membership_filter = self.get_option('group_membership_filter')
@@ -293,24 +266,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         """
         Set LDAP binding
         """
-
-        #ldap.set_option(ldap.OPT_DEBUG_LEVEL, 4095)
-
-        if self.auth_type == 'gssapi' :
-            if not ldap.SASL_AVAIL:
-                raise AnsibleLookupError("Cannot use auth=gssapi when SASL is not configured with the local LDAP install")
-            if self.username or self.password:
-                raise AnsibleError("Explicit credentials are not supported when auth_type='gssapi'. Call kinit outside of Ansible")
-        elif self.auth_type == 'simple' and not (self.username and  self.password):
-            raise AnsibleError("The username and password values are required when auth_type=simple")
-        else:
-            if self.username and  self.password:
-                self.auth_type = 'simple'
-            elif ldap.SASL_AVAIL:
-                self.auth_type == 'gssapi'
-            else:
-                raise AnsibleError("Invalid auth_type value '%s': expecting either 'gssapi', or 'simple'" % self.auth_type)
-
         if ldapurl.isLDAPUrl(self.domain):
             ldap_url = ldapurl.LDAPUrl(ldapUrl=self.domain)
         else:
@@ -329,20 +284,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         self.ldap_session.page_size = 900
         self.ldap_session.set_option(ldap.OPT_PROTOCOL_VERSION, 3)
         self.ldap_session.set_option(ldap.OPT_REFERRALS, 0)
-
-        if self.auth_type == 'simple':
-            try:
-                self.ldap_session.bind_s(self.username, self.password, ldap.AUTH_SIMPLE)
-            except ldap.LDAPError as err:
-                raise AnsibleError("Failed to simple bind against LDAP host '%s': %s " % (conn_url, to_native(err)))
-        else:
-            try:
-                self.ldap_session.sasl_gssapi_bind_s()
-            except ldap.AUTH_UNKNOWN as err:
-                # The SASL GSSAPI binding is not installed, e.g. cyrus-sasl-gssapi. Give a better error message than what python-ldap provides
-                raise AnsibleError("Failed to do a sasl bind against LDAP host '%s', the GSSAPI mech is not installed: %s" % (conn_url, to_native(err)))
-            except ldap.LDAPError as err:
-                raise AnsibleError("Failed to do a sasl bind against LDAP host '%s': %s" % (conn_url, to_native(err)))                
 
 
     def _detect_group(self, ouString):
