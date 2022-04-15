@@ -17,13 +17,6 @@ DOCUMENTATION = '''
             description: "Token that ensures this is a source file for the 'ldap_inventory' plugin"
             required: True
             choices: ['ldap_inventory']
-        online_only:
-            description:
-                - "Enables checking of hosts using ICMP ping before adding to inventory"
-                - "Note: This may not be compatabile with bubblewrap , which is enabled by default in Ansible Tower"
-            default: False
-            type: boolean
-            required: False
         group_membership:
             description:
                 - "Enables parsing the ldap groups that the computer account is a memberOf"
@@ -85,7 +78,7 @@ DOCUMENTATION = '''
                 - "Filter used to find computer objects."
                 - "Example: (objectClass=computer)"
             required: False
-            default: "(objectClass=Computer)"
+            default: "(objectClass=device)"
         exclude_groups:
             description:
                 - "List of groups to not include."
@@ -110,7 +103,7 @@ DOCUMENTATION = '''
             description: "Controls if verfication is done of SSL certificates for secure (ldaps://) connections."
             default: True
             required: False
-        fqdn_format:
+        use_fqdn:
             description: "Controls if the hostname is returned to the inventory as FQDN or shortname"
             default: False
             required: False
@@ -150,7 +143,7 @@ except ImportError:
     HAS_LDAP = False
     LDAP_IMP_ERR = traceback.format_exc()
 
-hostname_field = "name"
+hostname_field = "cn"
 
 display = Display()
 
@@ -218,27 +211,6 @@ class PagedResultsSearchObject:
 class MyLDAPObject(ldap.ldapobject.LDAPObject,PagedResultsSearchObject):
     pass
 
-
-def check_online(hostObject):
-    try:
-        hostname = hostObject[1][hostname_field][0].decode('utf-8')
-    except:
-        returnObject = hostObject + ({'online':False},)
-        return returnObject
-    result = subprocess.Popen(["ping -c 1 " + hostname  + ' >/dev/null 2>&1; echo $?'],shell=True,stdout=subprocess.PIPE)
-    out,err  = result.communicate()
-    out = out.decode('utf-8').replace("\n","")
-    try :
-        err = err.decode('utf-8').replace("\n","")
-    except:
-        err = ""
-    if(out == "0"):
-        returnObject = hostObject + ({'online':True},)
-        return returnObject
-    else:
-        returnObject = hostObject + ({'online':False},)
-        return returnObject
-
 class InventoryModule(BaseInventoryPlugin, Constructable):
     NAME = 'ldap_inventory'
 
@@ -252,10 +224,9 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         self.group_membership = self.get_option('group_membership')
         self.account_age = self.get_option('account_age')
         self.validate_certs = self.get_option('validate_certs')
-        self.online_only = self.get_option('online_only')
         self.exclude_groups = self.get_option('exclude_groups')
         self.exclude_hosts = self.get_option('exclude_hosts')
-        self.use_fqdn = self.get_option('fqdn_format')
+        self.use_fqdn = self.get_option('use_fqdn')
         self.scheme = self.get_option('scheme')
         self.ldap_filter = self.get_option('ldap_filter')
         self.group_membership_filter = self.get_option('group_membership_filter')
@@ -291,7 +262,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         Detect groups in OU string
         """
         groups = []
-        foundOUs = re.findall('(?u)OU=(\w{1,})',ouString)
+        foundOUs = re.findall('(?u)ou=(\w{1,})',ouString)
         foundOUs = [x.lower() for x in foundOUs]
         foundOUs = [x.replace("-","_") for x in foundOUs]
         foundOUs = [x.replace(" ","_") for x in foundOUs]
@@ -300,6 +271,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             group = '_'.join(elem for elem in foundOUs[0:i+1])
             groups.append(group)
         return groups
+
 
     def verify_file(self, path):
         '''
@@ -312,6 +284,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
                 return True
         display.debug("DEBUG: ldap inventory filename must end with 'ldap_inventory.yml' or 'ldap_inventory.yaml'")
         return False
+
 
     def parse(self, inventory, loader, path, cache=False):
         """
@@ -342,31 +315,22 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         windows_to_epoc_sec = 11644473600
         timestamp_filter_windows = ( int(timestamp_filter_epoch) + windows_to_epoc_sec ) * windows_tick
 
-        # Call LDAP query
         self._ldap_bind()
 
         try:
             pages, ldap_results = self.ldap_session.paged_search_ext_s(base=self.search_ou, scope=ldap_search_scope, filterstr=ldap_type_groupFilter, attrlist=ldap_search_attributeFilter)
+            print(ldap_results)
 
         except ldap.LDAPError as err:
             raise AnsibleError("Unable to perform query against LDAP server '%s' reason: %s" % (self.domain, to_native(err)))
             ldap_results = []
         display.debug('DEBUG: ldap_results Received %d results in %d pages.' % (len(ldap_results),pages) )
 
-        #Parse the results.
-        if self.online_only :
-            pool = multiprocessing.Pool(processes=cpus)
-            parsedResult = pool.map(check_online, ldap_results)
-        else:
-            parsedResult = ldap_results
-
-        for item in parsedResult:
+        for item in ldap_results:
             if isinstance(item[1],dict) is False or len(item[1]) != len(ldap_search_attributeFilter) :
                 display.debug("DEBUG: Skipping an possible corrupt object " + str(item[1]) + " " + str(item[0]))
                 continue
-            if self.online_only and item[2]['online'] is False :
-                continue
-            hostName = item[1][hostname_field][0].decode("utf-8").lower()
+            hostName = item[1]['cn'][0].decode('utf-8')
             display.debug("DEBUG: " + hostName + " processing host")
             pattern = re.compile('^DC')
             root_split = item[0].split(',')
@@ -376,7 +340,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             ldapGroups = []
 
             if self.use_fqdn is True :
-                domainName = "." + item[0].split('DC=',1)[1].replace(',DC=','.')
+                domainName = "." + item[0].split('dc=',1)[1].replace(',dc=','.')
                 hostName = hostName + domainName.lower()
 
             if self.account_age > 0:

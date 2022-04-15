@@ -1,8 +1,7 @@
 ---
 plugin: ldap_inventory
-domain: 'ldaps://adserver.domain.local:636'
-auth_type: simple
+domain: 'ldap://adserver.domain.local'
 username: user@domain.local
 password: "password"
-search_ou: "OU=Servers,OU=Windows,DC=domain,DC=local"
-account_age: 15 
+search_ou: "ou=computers,ou=Windows,dc=domain,dc=local"
+account_age: 15
